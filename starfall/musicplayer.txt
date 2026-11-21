@@ -11,7 +11,7 @@
 
 require("./lib/common.txt") -- Load the dependencies
 
-local CMDS = util.CommandWorker({ prefix = "?" })
+local CMDS = util.CommandWorker({ prefix = "?", ownerOnly = false })
 
 local radioCFG = {
     global_aud = 0,
@@ -390,20 +390,26 @@ else
                     snd:setTime(0, false)
                 end )
 
+                local FADE_START = 0.5  -- fade begins at 50% of the radius (0 = fade over the whole radius, 1 = hard cutoff)
+                
                 hook.add( "think", "snd", function()
-                    if snd == nil or !snd:isValid() then return end
-
-                    if ( isValid(snd) and isValid(chip()) ) then
-                        if radioCFG["global_aud"] == 0 then
-                            snd:setPos(chip():getPos())
-                            if player():getPos():getDistance(chip():getPos()) > curr_radius then
-                                snd:setVolume(0)
-                            else
-                                snd:setVolume(curr_volume)
-                            end
-                        else
-                            snd:setPos(player():getPos())
-                        end
+                    if !( snd and snd:isValid() ) then return end
+                    if !( isValid( chip() ) and isValid( player() ) ) then return end
+                
+                    if radioCFG["global_aud"] == 0 then
+                        snd:setPos( chip():getPos() )
+                
+                        local dist = player():getPos():getDistance( chip():getPos() )
+                        local fadeFrom = curr_radius * FADE_START
+                        local fadeLen = math.max( curr_radius - fadeFrom, 1 )
+                
+                        -- 0 inside fadeFrom, ramps to 1 at curr_radius
+                        local t = math.clamp( ( dist - fadeFrom ) / fadeLen, 0, 1 )
+                
+                        snd:setVolume( curr_volume * ( 1 - t ) )
+                    else
+                        snd:setPos( player():getPos() )
+                        snd:setVolume( curr_volume )
                     end
                 end )
             else print("🛈 "..errtxt..": "..err) end
