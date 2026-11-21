@@ -128,7 +128,7 @@ end
 
     EXAMPLE USAGE:
         local CMD = util.CommandWorker({ prefix = "!" }) -- this must be called before using anything. inside, you can define custom configurations here. (eg. a prefix)
-        CMD:registerCommand("example_cmd", function(ply, any_param_name) -- prefix, command name & function.   prefix is optional btw
+        CMD:registerCommand("example_cmd", function(ply, any_param_name) -- command name & function
             local inputVal = any_param_name -- careful, the type for param names are strings by default! they must be converted afterwards!
 
             net.start("something")
