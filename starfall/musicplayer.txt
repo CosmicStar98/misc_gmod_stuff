@@ -11,7 +11,7 @@
 
 require("./lib/common.txt") -- Load the dependencies
 
-local CMDS = util.CommandWorker({ prefix = "?", ownerOnly = false })
+local CMDS = util.CommandWorker({ prefix = "?" })
 
 local radioCFG = {
     global_aud = 0,
@@ -287,8 +287,8 @@ else
                         timer.pause("loadsong")
                     else
                         if snd then snd:play() end
-                        timer.unpause("startstop")
-                        timer.unpause("loadsong")
+                        timer.("startstop")
+                        timer.("loadsong")
                     end
                 end )
 
@@ -427,8 +427,12 @@ else
     - ?vol <NUMBER>  ::  Changes the radio's curr volume
     - ?pitch <NUMBER>  ::  Changes the speed of the audio
     - ?radius <NUMBER>  ::  Changes the max audio distance
-    - ?global  ::  Play across the map regardless of radius
-    - ?loop  ::  Loops the current song until you change tracks
+    - ?global <TOGGLE>  ::  Play across the map regardless of radius
+    - ?time -/+<NUMBER> ::  Skips to a point in a song
+    - ?loop <TOGGLE>  ::  Loops the current song until you change tracks
+    - ?pause <TOGGLE>  ::  Pauses / Unpauses a track
+    - ?unpause  ::  Forcefully npauses a track in case of lag
+    - ?reload  ::  Remotely reboots the radio chip
     ]])
 
 
