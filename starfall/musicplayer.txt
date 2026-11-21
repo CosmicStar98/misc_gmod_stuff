@@ -287,8 +287,8 @@ else
                         timer.pause("loadsong")
                     else
                         if snd then snd:play() end
-                        timer.("startstop")
-                        timer.("loadsong")
+                        timer.unpause("startstop")
+                        timer.unpause("loadsong")
                     end
                 end )
 
