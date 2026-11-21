@@ -52,7 +52,7 @@ if SERVER then
         net.send()
     end, {"n", "skip"} )
 
-    CMDS:registerCommand( "prev", function(ply, num)
+    CMDS:registerCommand( "prev", function( ply, num )
         local inputVal = tonumber(num) or 1
 
         net.start("prevSong")
