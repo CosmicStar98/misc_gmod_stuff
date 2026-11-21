@@ -431,7 +431,7 @@ else
     - ?time -/+<NUMBER> ::  Skips to a point in a song
     - ?loop <TOGGLE>  ::  Loops the current song until you change tracks
     - ?pause <TOGGLE>  ::  Pauses / Unpauses a track
-    - ?unpause  ::  Forcefully npauses a track in case of lag
+    - ?unpause  ::  Forcefully unpauses a track in case of lag
     - ?reload  ::  Remotely reboots the radio chip
     ]])
 
