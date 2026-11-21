@@ -5,7 +5,7 @@ DefaultPlaylist = {
     [1] = {
         ["name"] = "Rainbow Tylenol",
         ["artist"] = "Panorrrama",
-        ["url"] = FixUrl("https://raw.githubusercontent.com/CosmicStar98/gradio_sf/main/sample_music/Panorrrama - Rainbow Tylenol.mp3")
+        ["url"] = FixUrl("https://raw.githubusercontent.com/CosmicStar98/misc_gmod_stuff/main/sample_music/Panorrrama - Rainbow Tylenol.mp3")
     }
 }
 

@@ -1,3 +1,7 @@
+# About
+A radio player for garry's mod written in starfall.
+
+
 # TODO:
 
 - Add a visualizer

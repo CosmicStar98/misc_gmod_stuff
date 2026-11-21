@@ -1,25 +1,27 @@
---@name Gamer Radio V3
---@author CosmicStar98 [STEAM_0:0:634049946]
+--@name Gamer Radio V3.1
+--@author CosmicStar98
 --@shared
---@include ./mp/musicplayer_libs.txt
---@include ./mp/musicplayer_songlist.txt
-//-g-@model models/props/cs_office/radio.mdl
---@model models/props_lab/citizenradio.mdl
+--@include ./lib/common.txt
+--@include ./lib/musicplayer_songlist.txt
+--@model models/props/cs_office/radio.mdl
+
+-- other models that could be used if you want. just remove the "g" and the slashes...
+//-g-@model models/props_lab/citizenradio.mdl
 //-g-@model models/props_radiostation/radio_antenna01.mdl
 
-require("./mp/musicplayer_libs.txt") -- Load the dependencies
+require("./lib/common.txt") -- Load the dependencies
 
-radioCFG = {
-    ["prefix"] = "?",
-    ["global_aud"] = 0,
-    ["playlist"] = "default"    -- enter "default" for standard playlist or enter a pastebin url with properly formatted contents
-}
-cmd_prefix = radioCFG["prefix"] -- Global so that this is accessible by musicplayer_libs.txt
+local CMDS = util.CommandWorker({ prefix = "?" })
 
-local defaultVALs = {
-    ["pitch"] = 0,
-    ["volume"] = 1.3,
-    ["radius"] = 150
+local radioCFG = {
+    global_aud = 0,
+    playlist = "default",  -- enter "default" for standard playlist or a url for a remote playlist
+
+    defaults = {
+        pitch = 0,
+        volume = 1.3,
+        radius = 150
+    }
 }
 
 
@@ -27,59 +29,55 @@ local defaultVALs = {
 
 -- Data for various commands
 local song_length = nil
-local curr_pitch = defaultVALs["pitch"]
-local curr_volume = defaultVALs["volume"]
-local curr_radius = defaultVALs["radius"]
+local curr_pitch = radioCFG.defaults["pitch"]
+local curr_volume = radioCFG.defaults["volume"]
+local curr_radius = radioCFG.defaults["radius"]
 
 local i = 1
 local num_id = 1
 
 local isPaused = 0
 
+local SongList = require("./lib/musicplayer_songlist.txt") -- Default song playlist
+
 -- [END] do not modify!!!
 
 
-local SongList = require("./mp/musicplayer_songlist.txt") -- Default song playlist (IMPORTANT: do not publish your own FROM CLOUD SERVICES LIKE GDRIVE, as your files/account may get rate limited or flagged as bot activity from mass public use!)
-
-
 if SERVER then
-    registerCommand("next", function(ply, args)
-        local inputVal = tonumber(args[2])
-        if not inputVal then inputVal = 1 end
+    CMDS:registerCommand( "next", function( ply, num )
+        local inputVal = tonumber(num) or 1
 
         net.start("skipSong")
           net.writeDouble(inputVal)
         net.send()
-    end, {"n", "skip"})
+    end, {"n", "skip"} )
 
-    registerCommand("prev", function(ply, args)
-        local inputVal = tonumber(args[2])
-        if not inputVal then inputVal = 1 end
+    CMDS:registerCommand( "prev", function(ply, num)
+        local inputVal = tonumber(num) or 1
 
         net.start("prevSong")
           net.writeDouble(inputVal)
         net.send()
-    end, {"b", "back"})
+    end, {"b", "back"} )
 
-    registerCommand("load", function(ply, args)
-        local songID = tonumber(args[2])
-        if songID then
+    CMDS:registerCommand( "load", function( ply, ID )
+        if ID then
             net.start("loadID")
-              net.writeDouble(songID)
+              net.writeDouble(tonumber(ID))
             net.send()
         end
-    end, {"l", "jump", "play"})
+    end, {"play"} )
 
-    registerCommand("time", function(ply, args)
-        if args[2]:sub(1,1) == "-" or args[2]:sub(1,1) == "+" then
-            inputType = args[2]:sub(1,1)
-            inputVal = tonumber(args[2]:sub(2))
+    CMDS:registerCommand( "time", function( ply, time )
+        if time:sub(1, 1) == "-" or time:sub(1, 1) == "+" then
+            inputType = time:sub(1, 1)
+            inputVal = tonumber(time:sub(2))
         else
             inputType = ""
-            inputVal = tonumber(args[2])
+            inputVal = tonumber(time)
         end
 
-        if not args[2] then
+        if !time then
             inputType = ""
             inputVal = 10
         end
@@ -88,31 +86,28 @@ if SERVER then
           net.writeString(inputType)
           net.writeDouble(inputVal)
         net.send()
-    end, {"t", "pos", "position"})
+    end, {"t"} )
 
-    registerCommand("pitch", function(ply, args)
-        local inputVal = tonumber(args[2])
-        if not inputVal then inputVal = defaultVALs["pitch"] end
+    CMDS:registerCommand( "pitch", function( ply, pitch )
+        local inputVal = tonumber(pitch) or radioCFG.defaults["pitch"]
 
         net.start("songPitch")
           net.writeDouble(inputVal)
           curr_pitch = inputVal
         net.send()
-    end, {"s", "speed"})
+    end, {"s", "speed"} )
 
-    registerCommand("volume", function(ply, args)
-        local inputVal = tonumber(args[2])
-        if not inputVal then inputVal = defaultVALs["volume"] end
+    CMDS:registerCommand( "volume", function( ply, vol )
+        local inputVal = tonumber(vol) or radioCFG.defaults["volume"]
 
         net.start("songVolume")
           net.writeDouble(inputVal)
           curr_volume = inputVal
         net.send()
-    end, {"v", "vol"})
+    end, {"v", "vol"} )
 
-    registerCommand("radius", function(ply, args)
-        local inputVal = tonumber(args[2])
-        if not inputVal then inputVal = defaultVALs["radius"] end
+    CMDS:registerCommand( "radius", function( ply, radius )
+        local inputVal = tonumber(radius) or radioCFG.defaults["radius"]
 
         if radioCFG["global_aud"] == 0 then
             net.start("songRadius")
@@ -120,54 +115,53 @@ if SERVER then
               curr_radius = inputVal
             net.send()
         end
-    end, {"r", "d", "range", "dist"})
+    end, {"r", "d", "range", "dist"} )
 
-    registerCommand("pause", function(ply, args)
+    CMDS:registerCommand( "pause", function( ply )
         net.start("pauseSong")
         net.send()
-    end, {"p"})
-    registerCommand("unpause", function(ply, args)
+    end, {"p"} )
+    CMDS:registerCommand( "unpause", function( ply )
         net.start("force_unpauseSong")
         net.send()
-    end, {"up"})
+    end, {"up"} )
 
-    registerCommand("global", function(ply, args)
+    CMDS:registerCommand( "global", function( ply )
         net.start("songGlobal")
         net.send()
-    end, {"g", "no3d"})
+    end, {"g", "no3d"} )
 
-    registerCommand("reload", function(ply, args)
+    CMDS:registerCommand( "reload", function( ply )
         net.start("reload")
         net.send()
-    end, {"r", "restart", "refresh"})
+    end, {"r", "restart", "refresh"} )
 
-    registerCommand("loop", function(ply, args)
+    CMDS:registerCommand( "loop", function( ply )
         net.start("loop")
         net.send()
-    end, {"repeat"})
+    end, {"repeat"} )
 
 
-    hook.add("PlayerSay", "ChatCommands", processChatCommand)
-    hook.add("think", "ChipTweaks", function()
+    hook.add( "think", "ChipTweaks", function()
         if isValid(chip()) then
             chip():enableMotion(false)
             chip():setDrawShadow(false)
         end
-    end)
-    hook.add("PhysgunPickup", "AllowPickup", function(ply, ent)
+    end )
+    hook.add( "PhysgunPickup", "AllowPickup", function( ply, ent )
         if isValid(chip()) then return false end
-    end)
-    hook.add("EntityTakeDamage", "NoChipDamage", function()
+    end )
+    hook.add( "EntityTakeDamage", "NoChipDamage", function()
         if isValid(chip()) then return false end
-    end)
-    --[[ hook.add("OnPhysgunPickup", "FuckOff", function(ply, ent)
+    end )
+    --[[ hook.add( "OnPhysgunPickup", "FuckOff", function( ply, ent )
         if isValid(chip()) and ply ~= owner() then
             ply:stripWeapons()
         end
-    end) ]]
+    end ) ]]
 else
-    local function loadSong(songURL)
-        bass.loadURL(tostring(songURL), "3d noblock", function(snd, err, errtxt)
+    local function loadSong( songURL )
+        bass.loadURL(tostring(songURL), "3d noblock", function( snd, err, errtxt )
             if snd then
                 pcall(snd.setLooping, snd, true)
             end
@@ -178,14 +172,10 @@ else
             end
 
             -- Flush the previously created timers on each execution to avoid hitting the timer limit
-            if timer.exists("startstop") then
-                timer.remove("startstop")
-            end
-            if timer.exists("loadsong") then
-                timer.remove("loadsong")
-            end
+            if timer.exists("startstop") then timer.remove("startstop") end
+            if timer.exists("loadsong") then timer.remove("loadsong") end
 
-            if isValid(snd) then     
+            if isValid(snd) then
                 local len = snd:getLength()
                 local dur = snd:getTime()
 
@@ -208,7 +198,7 @@ else
                     loadSong(SongList[i]["url"])
                 end)
 
-                net.receive("skipSong", function(res)
+                net.receive( "skipSong", function()
                     local num_next = net.readDouble()
                     if num_next == nil or num_next <= 0 then return "" end
                     if num_next > 15 then num_next = 15 end
@@ -221,10 +211,10 @@ else
                     end)
 
                     timer.adjust("loadsong", len, 1, function()
-                        if i >= #SongList then 
-                            i = 1 
-                        else 
-                            i = i + 1 
+                        if i >= #SongList then
+                            i = 1
+                        else
+                            i = i + 1
                         end
                         loadSong(SongList[i]["url"])
                     end)
@@ -237,9 +227,9 @@ else
                     end
 
                     loadSong(SongList[i]["url"])
-                end)
+                end )
 
-                net.receive("prevSong", function(res)
+                net.receive( "prevSong", function()
                     local num_prev = net.readDouble()
                     if num_prev < 1 then return "" end
                     if num_prev > 15 then num_prev = 15 end
@@ -260,14 +250,14 @@ else
 
                     i = i - num_prev
 
-                    if i < 1 then 
+                    if i < 1 then
                         i = #SongList + i
                     end
 
                     loadSong(SongList[i]["url"])
-                end)
+                end )
 
-                net.receive("loadID", function(res)
+                net.receive( "loadID", function()
                     num_id = net.readDouble()
                     if num_id > #SongList then num_id = 1 end
                     if num_id < 1 then num_id = #SongList end
@@ -286,9 +276,9 @@ else
                     i = num_id
 
                     loadSong(SongList[i]["url"])
-                end)
+                end )
 
-                net.receive("pauseSong", function(res)
+                net.receive( "pauseSong", function()
                     isPaused = isPaused == 1 and 0 or 1
 
                     if isPaused == 1 then
@@ -300,19 +290,18 @@ else
                         timer.unpause("startstop")
                         timer.unpause("loadsong")
                     end
-                end)
+                end )
 
-                net.receive("force_unpauseSong", function(res)
+                net.receive( "force_unpauseSong", function()
                     if isPaused == 1 then
                         if snd then snd:play() end
                         timer.unpause("startstop")
                         timer.unpause("loadsong")
                     end
-                end)
+                end )
 
-                net.receive("songTime", function(res)
-                    local type = net.readString()
-                    local time = net.readDouble()
+                net.receive( "songTime", function()
+                    local type, time = net.readString(), net.readDouble()
                     if time <= 0 then time = 0 end
                     if time >= math.floor(math.abs(len)) then time = 0 end
 
@@ -327,42 +316,42 @@ else
                     else time = net.readDouble() end
 
                     snd:setTime(time, false)
-                end)
+                end )
 
-                net.receive("songPitch", function(res)
+                net.receive( "songPitch", function()
                     local pitch = net.readDouble()
-                    if pitch == nil or not pitch then pitch = defaultVALs["pitch"] end
+                    if pitch == nil or !pitch then pitch = radioCFG.defaults["pitch"] end
 
                     print("\n♫ Pitch changed to "..pitch.."!")
                     curr_pitch = pitch
                     if snd then snd:setPitch(pitch) end
-                end)
+                end )
 
-                net.receive("songVolume", function(res)
+                net.receive( "songVolume", function()
                     local volume = net.readDouble()
-                    if volume == nil or not volume then volume = defaultVALs["volume"] end
+                    if volume == nil or !volume then volume = radioCFG.defaults["volume"] end
 
                     print("\n♫ Volume changed to "..volume.."!")
                     curr_volume = volume
                     if snd then snd:setVolume(volume) end
-                end)
+                end )
 
                 if radioCFG["global_aud"] == 0 then
-                    net.receive("songRadius", function(len)
+                    net.receive( "songRadius", function()
                         local radius = net.readDouble()
-                        if radius == nil or not radius then radius = defaultVALs["radius"] end
+                        if radius == nil or !radius then radius = radioCFG.defaults["radius"] end
 
                         print("\n⚠︎ Radius changed to "..radius.."!")
                         curr_radius = radius
                         if snd then snd:setFade(radius, radius) end
-                    end)
+                    end )
                 end
 
-                net.receive("songGlobal", function(res)
+                net.receive( "songGlobal", function()
                     if radioCFG["global_aud"] == 1 then radioCFG["global_aud"] = 0 else radioCFG["global_aud"] = 1 end
-                end)
+                end )
 
-                net.receive("reload", function(res)
+                net.receive( "reload", function()
                     print("\n⚠︎ Reloaded the chip!")
 
                     if timer.exists("startstop") then timer.remove("startstop") end
@@ -373,9 +362,9 @@ else
                     if snd then snd:stop() end
 
                     loadSong(SongList[i]["url"])
-                end)
+                end )
 
-                net.receive("loop", function(res)
+                net.receive( "loop", function()
                     print("\n♫ Looping #"..i.."!")
 
                     if timer.exists("startstop") then
@@ -399,11 +388,12 @@ else
                     i = i
 
                     snd:setTime(0, false)
-                end)
+                end )
 
-                hook.add("think", "snd", function()
-                    if snd == nil or not snd:isValid() then return end
-                    if isValid(snd) and isValid(chip()) then
+                hook.add( "think", "snd", function()
+                    if snd == nil or !snd:isValid() then return end
+
+                    if ( isValid(snd) and isValid(chip()) ) then
                         if radioCFG["global_aud"] == 0 then
                             snd:setPos(chip():getPos())
                             if player():getPos():getDistance(chip():getPos()) > curr_radius then
@@ -415,18 +405,16 @@ else
                             snd:setPos(player():getPos())
                         end
                     end
-                end)
-            else
-                print("🛈 "..errtxt..": "..err)
-            end
+                end )
+            else print("🛈 "..errtxt..": "..err) end
         end)
 
         url = nil
     end
 
     print([[
-     Welcome to the radio!
-      > Heres the list of available commands:
+     ⛧ 『 Welcome to the radio! 』 ⛧
+      ♦ Heres the list of available commands:
 
     - ?load <NUMBER>  ::  Jumps to a song id in the playlist
     - ?back, ?next <NUMBER>  ::  FF or RW the curr song
@@ -439,7 +427,7 @@ else
 
 
     if song_length == nil then
-        if radioCFG["playlist"]:lower() == "default" then
+        if ( radioCFG["playlist"]:lower() == "default" ) then
                 SongList = DefaultPlaylist
                 loadSong(SongList[1]["url"])
                 print("\n🛈 Loaded default playlist!")
@@ -464,19 +452,15 @@ else
                 end
 
                 http.get(playlist:gsub("^https?://", ""), onSuccess, onFailure, {["Content-Type"] = "text/*"})
-            else
-                print("🛈 Unable to load custom playlist, falling back to default: Disallowed")
-            end
+            else print("🛈 Unable to load custom playlist, falling back to default: Disallowed") end
         end
     end
 
     --[[ setupPermissionRequest({"bass.loadURL"}, "Let the radio use mp3 files from external sites", true)
 
-    hook.add("permissionrequest", "permission", function()
+    hook.add( "permissionrequest", "permission", function()
         if hasPermission("bass.loadURL", url) then
             loadSong(url)
-        else
-            print("🛈 Permission Denied")
-        end
-    end) ]]
+        else print("🛈 Permission Denied") end
+    end ) ]]
 end

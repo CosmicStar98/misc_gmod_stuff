@@ -1,0 +1,251 @@
+--@name Teleport
+--@author
+--@shared
+--@include ./lib/common.txt
+
+require("./lib/common.txt") -- Load the dependencies
+
+local CMDS = util.CommandWorker()
+
+
+if SERVER then
+    local SEAT_MODEL = "models/nova/chair_office02.mdl"
+    local O = owner()
+
+    local seat
+    local canTeleport = true
+    local tpToAimMode = false
+    local respawnMode = false
+    local antiFallMode = false
+    local maxHeight = 250
+    local jitter = 0
+    local deathPoint = O:getPos()
+    local posStack = {}
+    local waypoints = {}
+
+    prop.setPropUndo(false)
+    chip():setNoDraw(true)
+
+
+    -- Helpers
+    local function ensureSeat()
+        if isValid(seat) then return true end
+        if !prop.canSpawn() then return false end
+        seat = prop.createSeat(O:getPos(), Angle(), SEAT_MODEL, true)
+        if !isValid(seat) then return false end
+        seat:setNoDraw(true)
+        seat:setSolid(false)
+        return true
+    end
+
+    local function teleport(pos)
+        if !canTeleport or !ensureSeat() then return end
+        canTeleport = false
+        seat:emitSound("npc/scanner/scanner_nearmiss" .. math.random(1, 2) .. ".wav")
+        seat:setPos(pos)
+        seat:use()
+        timer.create("eject", 0.035, 1, function()
+            canTeleport = true
+            if isValid(seat) then seat:ejectDriver() end
+        end)
+    end
+
+    -- "x,y,z" -> Vector (or nil)
+    local function parseVector(str)
+        local parts = string.explode(",", str)
+        if #parts ~= 3 then return end
+    
+        local x, y, z = tonumber(parts[1]), tonumber(parts[2]), tonumber(parts[3])
+        if x and y and z then
+            return Vector(x, y, z)
+        end
+    end
+
+    local function pushPos()
+        posStack[#posStack + 1] = O:getPos()
+    end
+
+
+    -- Command registration
+    CMDS:registerCommand( "r", function()
+        respawnMode = !respawnMode
+        print(respawnMode and "Instant Respawns On" or "Instant Respawns Off")
+    end, {"rmode", "respawnmode"} )
+
+    CMDS:registerCommand( "fd", function()
+        antiFallMode = !antiFallMode
+        print(Color(255, 158, 89), "Fall damage mode: " .. (antiFallMode and "On" or "Off"))
+    end )
+
+    CMDS:registerCommand( "tp", function( ply, name )
+        if !name then return end
+        local ply = find.playersByName(name, false, false)
+
+        if isValid(ply) then
+            pushPos()
+            teleport( ply:getPos() - ply:getForward() * 36 )
+            print( Color(255, 158, 89), "Teleported to " .. name .. "." )
+        else print( Color(255, 158, 89), "Player: " .. name .. " was not found" ) end
+    end, {"teleport"} )
+
+    CMDS:registerCommand( "tpe", function( ply, entID )
+        local idx = tonumber(entID)
+        local ent = idx and entity(idx)
+
+        if isValid(ent) then
+            -- Tell the client to draw a red marker hologram on the entity
+            net.start("tpe_holo")
+            net.writeUInt(idx, 16)
+            net.send(O)
+            pushPos()
+            teleport(ent:getPos())
+        else print( Color(255, 158, 89), "Entity is not valid" ) end
+    end, {"teleport_ent"} )
+
+    -- >p x,y,z   -> teleport by offset
+    -- >p name    -> teleport to waypoint
+    CMDS:registerCommand( "p", function( ply, input )
+        if !input then return end
+        local offset = parseVector(input)
+        if offset then
+            pushPos()
+            teleport(O:getPos() + offset)
+            print( Color(255, 158, 89), "Teleported by offset." )
+        elseif waypoints[input] then
+            pushPos()
+            teleport(waypoints[input])
+            print( Color(255, 158, 89), "Teleported to waypoint." )
+        else print( Color(255, 158, 89), "Waypoint not found: " .. input ) end
+    end, {"tp_offset"} )
+
+    CMDS:registerCommand( "sdp", function( _, name )
+        if name and waypoints[name] then
+            deathPoint = waypoints[name]
+            print( Color(255, 158, 89), "Set deathpoint." )
+        else
+            deathPoint = O:getPos()
+            print( Color(255, 158, 89), "Set deathpoint at current location." )
+        end
+    end, {"ssp", "setspawn"} )
+
+    CMDS:registerCommand( "b", function()
+        local pos = table.remove(posStack)
+        if pos then
+            teleport(pos)
+        else print( Color(255, 158, 89), "No previous positions exist!" ) end
+    end, {"back", "return"} )
+
+    -- >jitter 1000 -> respawn up to 1000 units away (x/y) from the death point
+    CMDS:registerCommand( "jitter", function( _, num )
+        jitter = tonumber(num) or 0
+    end )
+
+    CMDS:registerCommand("awp", function( _, name )
+        if !name then return print(Color(255, 158, 89), "Usage: " .. CMDS:getPrefix() .. "awp <name>") end
+        waypoints[name] = O:getPos()
+        print(Color(255, 158, 89), "Made waypoint: \"" .. name .. "\" at current location.")
+    end, {"add_wp", "mk_wp"})
+
+    CMDS:registerCommand( "rwp", function( _, name )
+        if name and waypoints[name] then
+            waypoints[name] = nil
+            print( Color(255, 158, 89), "Removed waypoint: " .. name )
+        else print( Color(255, 158, 89), "Waypoint not found." ) end
+    end, {"del_wp", "rm_wp"} )
+
+    CMDS:registerCommand( "pwp", function()
+        local names = {}
+        for name in pairs(waypoints) do names[#names + 1] = name end
+        table.sort(names)
+        print( Color(255, 158, 89), #names > 0 and table.concat(names, ", ") or "No waypoints." )
+    end, {"print_wp", "ls_wp"} )
+
+    CMDS:registerCommand( "taim", function()
+        tpToAimMode = !tpToAimMode
+        print( Color(255, 158, 89), "Tp to aim mode: " .. (tpToAimMode and "On" or "Off") )
+    end, {"tp_aim"} )
+
+
+    hook.add( "KeyPress", "teleport_aim_click", function( ply, key )
+        if ply ~= O or !tpToAimMode or key ~= IN_KEY.ATTACK then return end
+        pushPos()
+        teleport(O:getEyeTrace().HitPos)
+    end )
+
+    -- Respawn at death point
+    hook.add( "PlayerDeath", "teleport_death", function( victim )
+        if victim == O and respawnMode then
+            deathPoint = O:getPos()
+        end
+    end )
+
+    hook.add( "PlayerSpawn", "teleport_spawn", function( ply )
+        if ply ~= O then return end
+        timer.simple(0, function()
+            teleport(deathPoint + Vector(math.rand(-jitter, jitter), math.rand(-jitter, jitter), 0))
+        end)
+    end )
+
+    -- Anti fall damage & keep the seat alive
+    hook.add( "think", "teleport_think", function()
+        if !isValid(seat) then ensureSeat() end
+
+        if ( antiFallMode and O:isAlive() ) then
+            local start = O:getPos() - O:getForward() * 30
+            local tr = trace.line(start, start + Vector(0, 0, -16384), O)
+            if tr.Hit and math.abs(O:getPos().z - tr.HitPos.z) >= maxHeight then
+                teleport(tr.HitPos + Vector(0, 0, 36))
+            end
+        end
+    end )
+
+
+    hook.add( "remote", "teleport_remote", function( sender, senderOwner, pos )
+        if senderOwner ~= O then return end -- only accept from your own chips
+        if ( type(pos) == "Vector" ) then
+            print(Color(255, 158, 89), "Received signal!")
+            teleport(pos)
+        end
+    end )
+
+    hook.add( "removed", "teleport_goodbye", function()
+        print(Color(255, 158, 89), "Goodbye!!")
+    end )
+
+
+    -- Startup
+    ensureSeat()
+
+    local P = CMDS:getPrefix()
+    print(Color(255, 20, 20), "==================================================\n\t\tCOMMANDS")
+    printTable({
+        P .. "sdp [waypoint] - Sets your spawn point (current position, or a waypoint)",
+        P .. "r - Toggle auto respawn at the place you died",
+        P .. "tp <player> - Teleports you to a player",
+        P .. "tpe <entindex> - Teleports you to an entity",
+        P .. "awp <name> - Creates a waypoint at your position",
+        P .. "p <waypoint> - Teleports you to a waypoint",
+        P .. "p x,y,z - Teleports you by that offset from your position",
+        P .. "rwp <name> - Removes a waypoint",
+        P .. "pwp - Prints your waypoints",
+        P .. "b - Returns you to your previous position",
+        P .. "fd - Toggle anti fall damage mode",
+        P .. "jitter <n> - Randomizes respawn position around the death point",
+        P .. "taim - Toggle teleport-to-aim mode",
+    })
+    print(Color(255, 20, 20), "==================================================\n\n")
+
+else -- CLIENT
+    if player() ~= owner() then return end
+
+    local holo
+    net.receive("tpe_holo", function()
+        local ent = entity(net.readUInt(16))
+        if not isValid(ent) then return end
+        if isValid(holo) then holo:remove() end
+        holo = holograms.create(ent:getPos(), ent:getAngles(), ent:getModel(), Vector(1.5))
+        holo:setParent(ent)
+        holo:setColor(Color(255, 0, 0))
+        holo:setMaterial("models/debug/debugwhite")
+    end)
+end

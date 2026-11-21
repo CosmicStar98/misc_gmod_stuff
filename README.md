@@ -1,6 +1,3 @@
-# gradio_sf
-A radio player for garry's mod written in starfall.
+# Misc Garry's Mod Stuff
 
-
-## Installation
-Simply download and extract `/mp/` and `musicplayer.txt` to `garrysmod/data/starfall/`.
+random gmod bullshit i made or found useful goes in here

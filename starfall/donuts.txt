@@ -1,0 +1,51 @@
+--@name goober donuts & scallop melon spam
+--@author CosmicStar98
+--@server
+--prop.setPropClean(false)
+
+local height = 70
+local spread = 1000
+local model = {
+    "models/noesis/donut.mdl",
+    "models/props_junk/watermelon01.mdl"--[[,
+    "models/food/burger.mdl",
+    "models/food/hotdog.mdl",
+    "models/props_junk/PopCan01a.mdl"]]
+}
+
+local function make_donuts()
+    if !prop.canSpawn() then return end
+    local ent
+    local ply = find.playerBySteamID64("SOME_STEAM_ID_64", false, true)
+
+    pcall(function()
+        ent = prop.create( chip():getPos() + Vector(math.random(-spread, spread), math.random(-spread, spread), height), Angle(math.random(1,360),math.random(1,360),math.random(1,360)) , model[math.random(1,table.count(model))], false )
+        ent:setCollisionGroup(3)
+        ent:setUnbreakable(true)
+        ent:setPhysMaterial("gmod_bouncy")
+        timer.simple(math.random(9, 12),function()
+            if !isValid(ent) then return end
+            -- ent:enableMotion(false)
+            
+        end)
+
+        ent:setPos(ply:getPos())
+            
+        local eff = effect.create()
+        ent:addCollisionListener( function( data )
+            if !effect.canCreate() then return end
+            eff:setOrigin(ent:getPos())
+        end )
+    end)
+
+    hook.add( "think", "NoDonutMotion", function()
+        -- if isValid(ent) then ent:enableMotion(false) end
+        if isValid(chip()) then chip():enableMotion(false) end
+    end )
+end
+
+hook.add("EntityTakeDamage", "NoChipDamage", function()
+    if isValid(chip()) then return false end
+end)
+
+timer.create( "silly_donuts", 0, 0, make_donuts)
