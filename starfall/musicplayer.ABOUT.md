@@ -4,13 +4,15 @@ A radio player for garry's mod written in starfall.
 
 # TODO:
 
-- Add a visualizer
 - Improve playback syncing
 - Properly recover from `snd_stop`
 - True synced shuffling
 - GUI controls
-- Feature to have multiple playlist files downloaded (w functionality to pick between)
-- Feature for whitelisted Steam IDs to control playback
-- Feature to have global playback for specific people
+- Feature to have multiple playlist files downloaded (with functionality to pick between)
+
+## Note about prototype
+The prototype version is a highly experimental rewrite of the whole chip
+It's unfinished and could have issues. this will eventually be V5 when its ready.
+It has improved playback syncing and shuffling.
 
 ---

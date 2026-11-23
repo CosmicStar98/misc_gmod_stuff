@@ -1,24 +1,18 @@
---@name Gamer Radio V3.1
+--@name Radio Chip V4
 --@author CosmicStar98
 --@shared
 --@include ./lib/common.txt
 --@include ./lib/musicplayer_songlist.txt
 --@model models/props/cs_office/radio.mdl
 
--- other models that could be used if you want. just remove the "g" and the slashes...
-//-g-@model models/props_lab/citizenradio.mdl
-//-g-@model models/props_radiostation/radio_antenna01.mdl
 
-require("./lib/common.txt") -- Load the dependencies
-
-local CMDS = util.CommandWorker({ prefix = "?" })
-
+-- Basic radio configuration
+-- (slightly more advanced nerdy stuff is far below)
 local radioCFG = {
-    global_aud = 0,
     playlist = "default",  -- enter "default" for standard playlist or a url for a remote playlist
 
     defaults = {
-        pitch = 0,
+        pitch = 1.0,
         volume = 1.3,
         radius = 150
     }
@@ -27,21 +21,20 @@ local radioCFG = {
 
 -- [START] do not modify!!!
 
--- Data for various commands
-local song_length = nil
+-- anchor values shared between server & client
 local curr_pitch = radioCFG.defaults["pitch"]
 local curr_volume = radioCFG.defaults["volume"]
 local curr_radius = radioCFG.defaults["radius"]
 
-local i = 1
-local num_id = 1
+require("./lib/common.txt") -- Load the dependencies
 
-local isPaused = 0
-
-local SongList = require("./lib/musicplayer_songlist.txt") -- Default song playlist
+local CMDS = util.CommandWorker({ prefix = "?" })
+local SongList = require("./lib/musicplayer_songlist.txt") -- Default playlist
 
 -- [END] do not modify!!!
 
+
+-- < PUMP UP THE JAM > ---------------------------------------------
 
 if SERVER then
     CMDS:registerCommand( "next", function( ply, num )
@@ -109,12 +102,10 @@ if SERVER then
     CMDS:registerCommand( "radius", function( ply, radius )
         local inputVal = tonumber(radius) or radioCFG.defaults["radius"]
 
-        if radioCFG["global_aud"] == 0 then
-            net.start("songRadius")
-              net.writeDouble(inputVal)
-              curr_radius = inputVal
-            net.send()
-        end
+        net.start("songRadius")
+          net.writeDouble(inputVal)
+          curr_radius = inputVal
+        net.send()
     end, {"r", "d", "range", "dist"} )
 
     CMDS:registerCommand( "pause", function( ply )
@@ -126,22 +117,13 @@ if SERVER then
         net.send()
     end, {"up"} )
 
-    CMDS:registerCommand( "global", function( ply )
-        net.start("songGlobal")
-        net.send()
-    end, {"g", "no3d"} )
-
-    CMDS:registerCommand( "reload", function( ply )
-        net.start("reload")
-        net.send()
-    end, {"r", "restart", "refresh"} )
-
     CMDS:registerCommand( "loop", function( ply )
         net.start("loop")
         net.send()
     end, {"repeat"} )
 
 
+    -- SERVER HOOKS
     hook.add( "think", "ChipTweaks", function()
         if isValid(chip()) then
             chip():enableMotion(false)
@@ -154,270 +136,311 @@ if SERVER then
     hook.add( "EntityTakeDamage", "NoChipDamage", function()
         if isValid(chip()) then return false end
     end )
-    --[[ hook.add( "OnPhysgunPickup", "FuckOff", function( ply, ent )
-        if isValid(chip()) and ply ~= owner() then
-            ply:stripWeapons()
-        end
-    end ) ]]
-else
-    local function loadSong( songURL )
-        bass.loadURL(tostring(songURL), "3d noblock", function( snd, err, errtxt )
-            if snd then
-                pcall(snd.setLooping, snd, true)
-            end
+else -- CLIENT
+    -- some configurable shit
+    local FADE_START   = 0.5   -- distance fade starts at this fraction of the radius
+    local MAX_STEP     = 15    -- most songs a single ?next / ?back may jump
+    local END_MARGIN   = 0.1   -- seconds from the end at which a song counts as finished
+    local MAX_FAILS    = 3     -- consecutive failed loads before the radio stops trying
+    local LOAD_TIMEOUT = 30    -- seconds until a load that never answered is abandoned
 
-            if isValid(snd) then
-                snd:setVolume(curr_volume)
-                snd:setFade(curr_radius, curr_radius)
-            end
 
-            -- Flush the previously created timers on each execution to avoid hitting the timer limit
-            if timer.exists("startstop") then timer.remove("startstop") end
-            if timer.exists("loadsong") then timer.remove("loadsong") end
+-- [START] do not modify!!!
+    -- the radio's state
+    local snd          = nil   -- current Bass object, nil when nothing is loaded
+    local songIndex    = 1     -- the playlist index for a song that's been chosen
+    local started      = false -- true once the current sound has been seen playing
+    local failStreak   = 0     -- consecutive failed loads
+    local loadToken    = 0     -- bumped per load request so a late reply can tell it's outdated
+    local loadingSince = nil   -- timer.realtime() when the in-flight load began (nil = none)
+    local pendingIndex = nil   -- newest song requested while a load was still in flight
+    local playlist     = tostring( radioCFG["playlist"] or "default" ):Trim()
+-- [END] do not modify!!!
 
-            if isValid(snd) then
-                local len = snd:getLength()
-                local dur = snd:getTime()
 
-                song_length = len
+    -- < BASIC HELPERS > ------------------------------------------------
 
-                setName(string.format("♪ Super Boombox DX ♪ ]\n[   %s by %s   ]\n[   ID #%i   ]\n[  %i Songs Loaded ", SongList[i]["name"], SongList[i]["artist"], i, #SongList))
-
-                if i > #SongList then i = 1 end
-                if len == nil then
-                    if i >= #SongList then i = 1 else i = i + 1 end
-                    loadSong(SongList[i]["url"])
-                end
-
-                -- Recreate the timers only if the audio is valid
-                timer.create("startstop", len, 1, function()
-                    if snd then snd:stop() end
-                end)
-                timer.create("loadsong", len, 1, function()
-                    if i >= #SongList then i = 1 else i = i + 1 end
-                    loadSong(SongList[i]["url"])
-                end)
-
-                net.receive( "skipSong", function()
-                    local num_next = net.readDouble()
-                    if num_next == nil or num_next <= 0 then return "" end
-                    if num_next > 15 then num_next = 15 end
-
-                    timer.stop("startstop")
-                    timer.stop("loadsong")
-
-                    timer.adjust("startstop", len, 1, function()
-                        if snd then snd:stop() end
-                    end)
-
-                    timer.adjust("loadsong", len, 1, function()
-                        if i >= #SongList then
-                            i = 1
-                        else
-                            i = i + 1
-                        end
-                        loadSong(SongList[i]["url"])
-                    end)
-
-                    if snd then snd:stop() end
-
-                    i = i + num_next
-                    if i > #SongList then
-                        i = ((i - 1) % #SongList) + 1
-                    end
-
-                    loadSong(SongList[i]["url"])
-                end )
-
-                net.receive( "prevSong", function()
-                    local num_prev = net.readDouble()
-                    if num_prev < 1 then return "" end
-                    if num_prev > 15 then num_prev = 15 end
-                    if num_prev == nil then num_prev = 1 end
-
-                    timer.stop("startstop")
-                    timer.stop("loadsong")
-
-                    timer.adjust("startstop", len, 1, function()
-                        if snd then snd:stop() end
-                    end)
-                    timer.adjust("loadsong", len, 1, function()
-                        if i >= #SongList then i = 1 else i = i + 1 end
-                        loadSong(SongList[i]["url"])
-                    end)
-                    
-                    if snd then snd:stop() end
-
-                    i = i - num_prev
-
-                    if i < 1 then
-                        i = #SongList + i
-                    end
-
-                    loadSong(SongList[i]["url"])
-                end )
-
-                net.receive( "loadID", function()
-                    num_id = net.readDouble()
-                    if num_id > #SongList then num_id = 1 end
-                    if num_id < 1 then num_id = #SongList end
-                    if num_id == nil then num_id = 1 end
-
-                    timer.stop("startstop")
-                    timer.stop("loadsong")
-                        timer.adjust("startstop", len, 1, function()
-                            if snd then snd:stop() end
-                        end)
-                        timer.adjust("loadsong", len, 1, function()
-                            if i >= #SongList then i = 1 else i = i + 1 end
-                            loadSong(SongList[i]["url"])
-                        end)
-                    if snd then snd:stop() end
-                    i = num_id
-
-                    loadSong(SongList[i]["url"])
-                end )
-
-                net.receive( "pauseSong", function()
-                    isPaused = isPaused == 1 and 0 or 1
-
-                    if isPaused == 1 then
-                        if snd then snd:pause() end
-                        timer.pause("startstop")
-                        timer.pause("loadsong")
-                    else
-                        if snd then snd:play() end
-                        timer.unpause("startstop")
-                        timer.unpause("loadsong")
-                    end
-                end )
-
-                net.receive( "force_unpauseSong", function()
-                    if isPaused == 1 then
-                        if snd then snd:play() end
-                        timer.unpause("startstop")
-                        timer.unpause("loadsong")
-                    end
-                end )
-
-                net.receive( "songTime", function()
-                    local type, time = net.readString(), net.readDouble()
-                    if time <= 0 then time = 0 end
-                    if time >= math.floor(math.abs(len)) then time = 0 end
-
-                    if type == "+" then
-                        if snd:getTime() + time >= math.floor(math.abs(len)) then
-                            time = 0
-                        else time = snd:getTime() + time end
-                    elseif type == "-" then
-                        if snd:getTime() - time < 0 then
-                            time = snd:getTime()
-                        else time = snd:getTime() - time end
-                    else time = net.readDouble() end
-
-                    snd:setTime(time, false)
-                end )
-
-                net.receive( "songPitch", function()
-                    local pitch = net.readDouble()
-                    if pitch == nil or !pitch then pitch = radioCFG.defaults["pitch"] end
-
-                    print("\n♫ Pitch changed to "..pitch.."!")
-                    curr_pitch = pitch
-                    if snd then snd:setPitch(pitch) end
-                end )
-
-                net.receive( "songVolume", function()
-                    local volume = net.readDouble()
-                    if volume == nil or !volume then volume = radioCFG.defaults["volume"] end
-
-                    print("\n♫ Volume changed to "..volume.."!")
-                    curr_volume = volume
-                    if snd then snd:setVolume(volume) end
-                end )
-
-                if radioCFG["global_aud"] == 0 then
-                    net.receive( "songRadius", function()
-                        local radius = net.readDouble()
-                        if radius == nil or !radius then radius = radioCFG.defaults["radius"] end
-
-                        print("\n⚠︎ Radius changed to "..radius.."!")
-                        curr_radius = radius
-                        if snd then snd:setFade(radius, radius) end
-                    end )
-                end
-
-                net.receive( "songGlobal", function()
-                    if radioCFG["global_aud"] == 1 then radioCFG["global_aud"] = 0 else radioCFG["global_aud"] = 1 end
-                end )
-
-                net.receive( "reload", function()
-                    print("\n⚠︎ Reloaded the chip!")
-
-                    if timer.exists("startstop") then timer.remove("startstop") end
-                    if timer.exists("loadsong") then timer.remove("loadsong") end
-
-                    i = i
-                    num_id = i
-                    if snd then snd:stop() end
-
-                    loadSong(SongList[i]["url"])
-                end )
-
-                net.receive( "loop", function()
-                    print("\n♫ Looping #"..i.."!")
-
-                    if timer.exists("startstop") then
-                        timer.remove("startstop")
-                    end
-                    if timer.exists("loadsong") then
-                        timer.remove("loadsong")
-                    end
-
-                    timer.create("startstop", len, 0, function() snd:setTime(0, false) end)
-                    timer.adjust("startstop", len, 1, function()
-                        i = i
-                        snd:setTime(0, false)
-                    end)
-                    timer.create("loadsong", len, 0, function() snd:setTime(0, false) end)
-                    timer.adjust("loadsong", len, 1, function()
-                        i = i
-                        snd:setTime(0, false)
-                    end)
-
-                    i = i
-
-                    snd:setTime(0, false)
-                end )
-
-                local FADE_START = 0.5  -- fade begins at 50% of the radius (0 = fade over the whole radius, 1 = hard cutoff)
-                
-                hook.add( "think", "snd", function()
-                    if !( snd and snd:isValid() ) then return end
-                    if !( isValid( chip() ) and isValid( player() ) ) then return end
-                
-                    if radioCFG["global_aud"] == 0 then
-                        snd:setPos( chip():getPos() )
-                
-                        local dist = player():getPos():getDistance( chip():getPos() )
-                        local fadeFrom = curr_radius * FADE_START
-                        local fadeLen = math.max( curr_radius - fadeFrom, 1 )
-                
-                        -- 0 inside fadeFrom, ramps to 1 at curr_radius
-                        local t = math.clamp( ( dist - fadeFrom ) / fadeLen, 0, 1 )
-                
-                        snd:setVolume( curr_volume * ( 1 - t ) )
-                    else
-                        snd:setPos( player():getPos() )
-                        snd:setVolume( curr_volume )
-                    end
-                end )
-            else print("🛈 "..errtxt..": "..err) end
-        end)
-
-        url = nil
+    -- true if the string looks like a URL (with or without the protocol)
+    local function isValidPlaylist( str )
+        str = str:gsub("^https?://", "")
+        local host, rest = str:match("^([%w%-%.]+%.%a%a+)(.*)$")
+        return host ~= nil and ( rest == "" or rest:find("^[/:%?]") ~= nil )
     end
 
+    -- wraps any whole number into 1
+    -- used for seamless playlist looping
+    local function wrapIndex( n )
+        return ( ( math.floor(n) - 1 ) % #SongList ) + 1
+    end
+
+    if curr_pitch <= 0 then curr_pitch = 1 end
+
+    local function applyFade( song )
+        local radius = math.clamp(curr_radius, 50, 20000)
+        song:setFade( radius * FADE_START, radius )
+    end
+
+    local function applySettings( song )
+        song:setVolume(curr_volume)
+        song:setPitch(curr_pitch)
+        applyFade(song)
+    end
+
+    local function updateName()
+        local song = SongList[songIndex]
+        if !song then return end
+
+        setName(string.format("♪ Cosmic's Boombox v4 ♪ ]\n[   %s by %s   ]\n[   ID #%i   ]\n[  %i Songs Loaded ", tostring(song["name"]), tostring(song["artist"]), songIndex, #SongList))
+    end
+
+
+    local playSong -- forward declaration (startLoad's callback needs it)
+    local function startLoad( index )
+        local song = SongList[index]
+        if !song or !song["url"] then
+            print("\n🛈 There is no song at position #"..tostring(index))
+            return
+        end
+
+        loadToken = loadToken + 1
+        local token = loadToken
+        pendingIndex = nil
+        loadingSince = timer.realtime()
+
+        local ok, err = pcall( bass.loadURL, song["url"], "3d noblock", function( newSnd, errNum, errName )
+            -- Outdated reply (this load was abandoned after LOAD_TIMEOUT): just free it.
+            if token ~= loadToken then
+                if isValid(newSnd) then newSnd:stop() end
+                return
+            end
+            loadingSince = nil
+
+            -- Something newer was requested while this was loading: drop this one.
+            if pendingIndex then
+                if isValid(newSnd) then newSnd:stop() end
+                startLoad(pendingIndex)
+                return
+            end
+
+            if !isValid(newSnd) then
+                failStreak = failStreak + 1
+                print("🛈 Couldn't load #"..songIndex.." ("..tostring(errName)..": "..tostring(errNum)..")")
+
+                if failStreak < MAX_FAILS then
+                    playSong( wrapIndex(songIndex + 1), true ) -- try the next one
+                else
+                    print("🛈 "..failStreak.." songs failed in a row, giving up. Use ?next to try again.")
+                end
+                return
+            end
+
+            snd = newSnd
+            started = false
+            applySettings(snd)
+            updateName()
+        end )
+
+        if !ok then
+            loadingSince = nil
+            print("\n🛈 Couldn't start loading #"..index..": "..tostring(err))
+        end
+    end
+
+    -- the one and only way a song starts
+    function playSong( index, keepStreak )
+        if !keepStreak then failStreak = 0 end
+
+        if #SongList == 0 then
+            print("\n🛈 The playlist is empty!")
+            return
+        end
+
+        songIndex = math.floor(index)
+
+        -- stop whatever is playing rn
+        if isValid(snd) then snd:stop() end
+        snd = nil
+        started = false
+
+        if loadingSince and timer.realtime() - loadingSince < LOAD_TIMEOUT then
+            pendingIndex = songIndex
+        else startLoad(songIndex) end
+    end
+
+
+    net.receive( "skipSong", function()
+        local num = net.readDouble()
+        if num < 1 then return end
+
+        playSong( wrapIndex( songIndex + math.min(num, MAX_STEP) ) )
+    end )
+
+    net.receive( "prevSong", function()
+        local num = net.readDouble()
+        if num < 1 then return end
+
+        playSong( wrapIndex( songIndex - math.min(num, MAX_STEP) ) )
+    end )
+
+    net.receive( "loadID", function()
+        local id = math.floor(net.readDouble())
+        if id > #SongList then id = 1 elseif id < 1 then id = #SongList end
+
+        playSong(id)
+    end )
+
+    net.receive( "pauseSong", function()
+        if !isValid(snd) then return end
+
+        if snd:isPaused() then snd:play() else snd:pause() end
+    end )
+
+    net.receive( "force_unpauseSong", function()
+        if isValid(snd) and snd:isPaused() then snd:play() end
+    end )
+
+    net.receive( "loop", function()
+        local looping = !snd:isLooping()
+        print("\n♫ Looping #"..songIndex.." "..( looping and "on" or "off" ).."!")
+
+        if isValid(snd) then snd:setLooping(looping) end
+    end )
+
+    net.receive( "songTime", function()
+        -- always read the whole message, even if there's nothing to apply it to
+        local kind, amount = net.readString(), net.readDouble()
+        if !isValid(snd) then return end
+
+        local len = snd:getLength()
+        local target
+
+        if kind == "+" then
+            target = snd:getTime() + amount
+        elseif kind == "-" then
+            target = snd:getTime() - amount
+        else target = amount end
+
+        if target < 0 then target = 0 end
+        if len > 0 and target >= math.floor(len) then target = 0 end -- past the end restarts the song
+
+        snd:setTime(target, false)
+    end )
+
+    net.receive( "songPitch", function()
+        local pitch = net.readDouble()
+        if pitch <= 0 then pitch = 1 end
+
+        print("\n♫ Pitch changed to "..pitch.."!")
+        curr_pitch = pitch
+
+        if isValid(snd) then snd:setPitch(pitch) end
+    end )
+
+    net.receive( "songVolume", function()
+        local volume = net.readDouble()
+
+        print("\n♫ Volume changed to "..volume.."!")
+        curr_volume = volume
+
+        if isValid(snd) then snd:setVolume(volume) end
+    end )
+
+    net.receive( "songRadius", function()
+        local radius = net.readDouble()
+
+        print("\n♫ Radius changed to "..radius.."!")
+        curr_radius = radius
+
+        if isValid(snd) then applyFade(snd) end
+    end )
+
+    hook.add( "think", "radio", function()
+        if snd == nil then return end
+
+        -- the sound vanished without us stopping it
+        -- treat it as the song ending, or as a failed load if it never got going
+        if !isValid(snd) then
+            snd = nil
+
+            if started then
+                failStreak = 0
+            else failStreak = failStreak + 1 end
+
+            if ( failStreak < MAX_FAILS ) then
+                playSong(wrapIndex(songIndex + 1), true)
+            end
+
+            return
+        end
+
+        if isValid(chip()) then snd:setPos(chip():getPos()) end
+
+        -- checks if a song has ended
+        -- this is only judged after the sound has been seen playing, so a sound that's still buffering can't be confused for a finished one
+        if !started then
+            if snd:isPlaying() then
+                started = true
+                failStreak = 0 -- it really played, so earlier failures don't count anymore
+            end
+        elseif !snd:isLooping() and !snd:isPaused() and !snd:isStalled() then
+            local len = snd:getLength()
+
+            if snd:isStopped() or ( len > 0 and snd:getTime() >= len - END_MARGIN ) then
+                playSong( wrapIndex(songIndex + 1) )
+            end
+        end
+    end )
+
+
+    -- < Visualizer > -----------------------------------------------------
+    -- TODO: make this not look like shit
+    -- TODO: add a nice display of album art, song title, artist(s), album name & release year (for songs with ID3v2 metadata)
+    local front, back = "RT", "RT2"
+    render.createRenderTarget(front)
+    render.createRenderTarget(back)
+
+    local centerTransform = Matrix()
+    centerTransform:setTranslation( Vector(512, 512, 0) )
+
+    hook.add( "render", "visualizer", function()
+        if isValid(snd) then
+            local bins = 64
+            local fft = snd:getFFT(bins)
+
+            render.setRenderTargetTexture(front)
+            render.selectRenderTarget(back)
+            render.clear( Color(0, 0, 0, 255) )
+            render.setColor( Color(255, 255, 255, 200) )
+            render.drawTexturedRect( -15, -15, 1054, 1054 )
+            render.setColor( Color( (timer.curtime() * 10 + 180) % 360 - 180, 1, 1 ):hsvToRGB() )
+            render.pushMatrix(centerTransform)
+
+            local firstX, firstY, lastX, lastY
+
+            for k = 2, bins do
+                local r = 200 - math.log10(k) * (fft[k] or 0) * 1000
+                local theta = (k - 2) * 2 * math.pi / (bins - 1)
+                local x, y = r * math.cos(theta), r * math.sin(theta)
+ 
+                if lastX then render.drawLine( x, y, lastX, lastY ) else firstX, firstY = x, y end
+                lastX, lastY = x, y
+            end
+
+            render.drawLine( firstX, firstY, lastX, lastY ) -- close the ring
+            render.popMatrix()
+            render.selectRenderTarget()
+
+            front, back = back, front
+        end
+
+        -- always show the latest finished frame
+        render.setColor( Color(255, 255, 255, 255) )
+        render.setRenderTargetTexture( front )
+        render.drawTexturedRect( 0, 0, 512, 512 )
+    end )
+
+
+    -- TODO: get rid of this and migrate it into a table
     print([[
      ⛧ 『 Welcome to the radio! 』 ⛧
       ♦ Heres the list of available commands:
@@ -427,50 +450,42 @@ else
     - ?vol <NUMBER>  ::  Changes the radio's curr volume
     - ?pitch <NUMBER>  ::  Changes the speed of the audio
     - ?radius <NUMBER>  ::  Changes the max audio distance
-    - ?global <TOGGLE>  ::  Play across the map regardless of radius
     - ?time -/+<NUMBER> ::  Skips to a point in a song
     - ?loop <TOGGLE>  ::  Loops the current song until you change tracks
     - ?pause <TOGGLE>  ::  Pauses / Unpauses a track
     - ?unpause  ::  Forcefully unpauses a track in case of lag
-    - ?reload  ::  Remotely reboots the radio chip
     ]])
 
 
-    if song_length == nil then
-        if ( radioCFG["playlist"]:lower() == "default" ) then
-                SongList = DefaultPlaylist
-                loadSong(SongList[1]["url"])
-                print("\n🛈 Loaded default playlist!")
-        else
-            if http.canRequest() then
-                local playlist = radioCFG["playlist"]
-
-                local function onSuccess(response, success)
-                    SongList = convertToTable(response)
-                    loadSong(SongList[1]["url"])
-                    print("\n🛈 Loaded custom playlist!")
-                end
-
-                local function onFailure(error)
-                    print(error)
-                    SongList = DefaultPlaylist
-                    print("\n🛈 Loaded default playlist!")
-                end
-
-                if string.startWith(playlist, "http") then
-                    playlist = FixPlaylistUrl(playlist)
-                end
-
-                http.get(playlist:gsub("^https?://", ""), onSuccess, onFailure, {["Content-Type"] = "text/*"})
-            else print("🛈 Unable to load custom playlist, falling back to default: Disallowed") end
-        end
+    -- pick a playlist, then start the first song
+    local function usePlaylist( list, message )
+        SongList = list or DefaultPlaylist or SongList
+        if message and CLIENT then print("\n ".. message) end
+        playSong(1)
     end
 
-    --[[ setupPermissionRequest({"bass.loadURL"}, "Let the radio use mp3 files from external sites", true)
+    if playlist:lower() == "default" then
+        usePlaylist( nil, "Loaded default playlist!" )
+    elseif !isValidPlaylist(playlist) then
+        usePlaylist( nil, "\"" .. playlist .. "\" isn't \"default\" or a valid URL!\nUsing the default playlist as a fail-safe!" )
+    elseif !http.canRequest() then
+        usePlaylist( nil, "Unable to load custom playlist: Disallowed\nUsing the default playlist as a fail-safe!" )
+    else
+        if string.startsWith(playlist, "http") then playlist = FixPlaylistUrl(playlist) end
 
-    hook.add( "permissionrequest", "permission", function()
-        if hasPermission("bass.loadURL", url) then
-            loadSong(url)
-        else print("🛈 Permission Denied") end
-    end ) ]]
+        local url = playlist:gsub("^https?://", "")
+
+        http.get(url,
+            function( body )
+                local list = convertToTable(body)
+
+                if type(list) == "table" and #list > 0 then
+                    usePlaylist( list, "Loaded custom playlist!" )
+                else usePlaylist( nil, "The custom playlist couldn't be read!\nUsing the default playlist as a fail-safe!" ) end
+            end,
+            function( reason )
+                usePlaylist( nil, tostring(reason) .. "\nUsing the default playlist as a fail-safe!" )
+            end,
+        {["Content-Type"] = "text/*"})
+    end
 end

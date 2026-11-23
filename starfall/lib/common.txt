@@ -129,17 +129,18 @@ end
     EXAMPLE USAGE:
         -- this must be called before using anything. inside, you can define custom configurations here. (eg. a prefix)
         local CMD = util.CommandWorker({
-            prefix    = "!",                              -- default >
+            prefix    = "!",                               -- default >
             ownerOnly = true,                              -- default true, see ACCESS RULES below
             whitelist = { "STEAM_0:1:1234567", "76561198000000000" }, -- SteamIDs on whistlist per worker (this is on top of the global default whitelist; if specified)
             useDefaultWhitelist = true,                    -- default true: also honor DEFAULT_WHITELIST below
         })
-        CMD:registerCommand("example_cmd", function(ply, any_param_name) -- command name & function
+        CMD:registerCommand("example_cmd", function( ply, any_param_name ) -- command name & function
             local inputVal = any_param_name -- careful, the type for param names are strings by default! they must be converted afterwards!
 
             net.start("something")
             net.send()
-        end, {"alias1", "alias2"}) -- Aliases are like nicknames for the actual command
+        end, {"alias1", "alias2"}) -- Aliases are nicknames for the actual command you're registering
+
 
     ACCESS RULES:
         - The chip owner is always allowed.
@@ -159,18 +160,18 @@ local COMMANDS = {
             self.conflicts = self.conflicts + 1
             key = key .. "_" .. self.conflicts
 
-            print(Color(255, 20, 20), "[ERROR] :: Command '" .. name .. "' for prefix '" .. self.prefix .. "' already registered!\n")
-            print(Color(255, 174, 23), "[WARN] :: Command '" .. name .. "' for prefix '" .. self.prefix .. "' has been given a temp name registration! (use '".. key .. ")'")
+            print( Color(255, 20, 20), "[ERROR] :: Command '" .. name .. "' for prefix '" .. self.prefix .. "' already registered!\n" )
+            print( Color(255, 174, 23), "[WARN] :: Command '" .. name .. "' for prefix '" .. self.prefix .. "' has been given a temp name registration! (use '".. key .. ")'" )
         end
 
         if ( type(func) ~= "function" ) then
-            print(Color(255, 20, 20), "[ERROR] :: Command '" .. name .. "' for prefix '" .. self.prefix .. "' must contain a function!\n")
+            print( Color(255, 20, 20), "[ERROR] :: Command '" .. name .. "' for prefix '" .. self.prefix .. "' must contain a function!\n" )
             return error("Command '" .. name .. "' for prefix '" .. self.prefix .. "' must contain a function!")
         end
 
         self.commands[key] = func
 
-        if ( aliasList ) then  -- TODO: program feature to allow aliases to extend the original command to allow for additional features per alias (Low priority)
+        if ( aliasList ) then -- TODO: program feature to allow aliases to extend the original command to allow for additional features per alias (Low priority)
             for _, alias in ipairs(aliasList) do
                 alias = alias:lower()
                 if ( alias ~= name ) then
@@ -187,30 +188,30 @@ local COMMANDS = {
     end,
 
     addWhitelist = function( self, id )
-        self.whitelist[tostring( id )] = true
+        self.whitelist[tostring(id)] = true
         return self
     end,
 
     removeWhitelist = function( self, id )
-        self.whitelist[tostring( id )] = nil
+        self.whitelist[tostring(id)] = nil
         return self
     end,
 
     isWhitelisted = function( self, target )
         if ( type(target) == "string" or type(target) == "number" ) then
-            return self.whitelist[tostring( target )] == true
+            return self.whitelist[tostring(target)] == true
         end
 
         if !isValid( target ) then return false end
 
         return self.whitelist[target:getSteamID()] == true
-            or self.whitelist[tostring( target:getSteamID64() )] == true
+            or self.whitelist[ tostring(target:getSteamID64()) ] == true
     end,
 
     isAuthorized = function( self, ply )
         if !isValid( ply ) then return false end
         if ply == owner() then return true end
-        if self:isWhitelisted( ply ) then return true end
+        if self:isWhitelisted(ply) then return true end
 
         -- open access only when not owner-only and no whitelist is in use
         return ( !self.ownerOnly ) and next( self.whitelist ) == nil
@@ -219,6 +220,7 @@ local COMMANDS = {
 
 COMMANDS.__index = COMMANDS
 
+
 local workerCount = 0
 -- Default whitelist, applied to every worker unless it sets useDefaultWhitelist = false.
 local DEFAULT_WHITELIST = {
@@ -226,7 +228,7 @@ local DEFAULT_WHITELIST = {
     -- "76561198000000000",
 }
 function util.CommandWorker( config )
-    config = config or {} -- TODO: make it so that there's a defined outline for what's acceptable inside the config
+    config = config or {}
     workerCount = workerCount + 1
 
     local self = setmetatable( {
@@ -240,19 +242,19 @@ function util.CommandWorker( config )
     }, COMMANDS )
 
     if ( config.useDefaultWhitelist ~= false ) then
-        for _, id in ipairs( DEFAULT_WHITELIST ) do
-            self:addWhitelist( id )
+        for _, id in ipairs(DEFAULT_WHITELIST) do
+            self:addWhitelist(id)
         end
     end
 
     if ( config.whitelist ) then
-        for _, id in ipairs( config.whitelist ) do
-            self:addWhitelist( id )
+        for _, id in ipairs(config.whitelist) do
+            self:addWhitelist(id)
         end
     end
 
     hook.add( "PlayerSay", self.hookName, function( ply, text, teamChat )
-        if !self:isAuthorized( ply ) then return end
+        if !self:isAuthorized(ply) then return end
 
         local args = string.explode(" ", text)
         local cmd = args[1]:lower()
@@ -260,8 +262,8 @@ function util.CommandWorker( config )
 
         local func = self.commands[cmd]
         if ( func ) then
-            func( ply, unpack( args, 2 ) ) -- skip args[1], the command itself
-            return ""   -- hide the command from chat
+            func( ply, unpack(args, 2) ) -- skip args[1], the command itself
+            return "" -- hide the command from chat
         end
     end )
 
@@ -270,23 +272,31 @@ function util.CommandWorker( config )
         self.commands, self.aliases = {}, {}
     end )
 
-    -- built-in: lists every command with its aliases and usage hint
-    -- TODO: finish usage hints stuff. names & aliases work but hints are unimplemented rn
-    --[[ self:RegisterCommand( "help", function( ply )
-        local keys = {}
-        for key in pairs( self.commands ) do keys[ #keys + 1 ] = key end
-        table.sort( keys )
 
-        for _, key in ipairs( keys ) do
+    -- < Default chat commands > -------------------------------------------
+    -- TODO: move this into a table of some kind and use a for-loop to automatically register them all (low priority until the list of built-in commands is long enough to justify)
+
+    -- lists every command with its aliases
+    -- TODO: add optional command hints & descriptions
+    self:registerCommand( "help", function( ply )
+        local keys = {}
+        for key in pairs(self.commands) do keys[#keys + 1] = key end
+        table.sort(keys)
+
+        for _, key in ipairs(keys) do
             local names = { key }
-            for alias, target in pairs( self.aliases ) do
-                if ( target == key ) then names[ #names + 1 ] = alias end
+            for alias, target in pairs(self.aliases) do
+                if ( target == key ) then names[#names + 1] = alias end
             end
 
-            local hint = self.usage[ key ]
-            print( Color( 120, 200, 255 ), table.concat( names, " | " ) .. ( hint and ( " " .. hint ) or "" ) )
+            print( Color(120, 200, 255), table.concat( names, " | " ) )
         end
-    end ) ]]
+    end )
+
+    -- pointless until the above TODO is implemented
+    --[[ if isFirstTimePredicted() then
+        print(Color(39, 149, 245), "[INFO] :: Chip successfully loaded!\nType ".. (config.prefix or ">") .. "help for a list of available commands.")
+    end ]]
 
     return self
 end

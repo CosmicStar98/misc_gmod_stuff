@@ -1,0 +1,566 @@
+--@name Radio Chip V5 Prototype
+--@author CosmicStar98
+--@shared
+--@include ./lib/common.txt
+--@include ./lib/musicplayer_songlist.txt
+--@model models/props/cs_office/radio.mdl
+
+
+-- Basic radio configuration
+-- (more advanced nerdy stuff is far below)
+local radioCFG = {
+    shuffle = false,       -- start with shuffle on?
+    playlist = "default",  -- enter "default" for the default playlist or a url for a remote one
+
+    defaults = {
+        pitch = 1.0,
+        volume = 1.3,
+        radius = 150
+    }
+}
+
+-- [START] do not modify!!!
+
+require("./lib/common.txt") -- Load the dependencies
+
+local CMDS = util.CommandWorker({ prefix = "?" })
+local SongList = require("./lib/musicplayer_songlist.txt") -- Default playlist
+
+-- [END] do not modify!!!
+
+
+-- < SHARED HELPERS > ---------------------------------------------
+
+-- server and clients use this function to always agree on the time
+local function songPos( song )
+    if song.paused then return song.pos end
+    return song.pos + math.max( 0, timer.curtime() - song.time ) * song.rate
+end
+
+-- true if the string looks like a URL (with or without the protocol)
+local function isValidPlaylist( str )
+    str = str:gsub("^https?://", "")
+    local host, rest = str:match("^([%w%-%.]+%.%a%a+)(.*)$")
+    return host ~= nil and ( rest == "" or rest:find("^[/:%?]") ~= nil )
+end
+
+-- picks the playlist and calls "onReady()" once "SongList" is final.
+-- runs on both realms so the server and the clients agree on what the song numbers mean
+local function loadPlaylist( onReady )
+    local function usePlaylist( list, message )
+        SongList = list or DefaultPlaylist or SongList
+        if message and CLIENT then print("\n ".. message) end
+        onReady()
+    end
+
+    local playlist = tostring( radioCFG["playlist"] or "default" ):Trim()
+
+    if playlist:lower() == "default" then
+        usePlaylist( nil, "Loaded default playlist!" )
+    elseif !isValidPlaylist(playlist) then
+        usePlaylist( nil, "\"" .. playlist .. "\" isn't \"default\" or a valid URL!\nUsing the default playlist as a fail-safe!" )
+    elseif !http.canRequest() then
+        usePlaylist( nil, "Unable to load custom playlist: Disallowed\nUsing the default playlist as a fail-safe!" )
+    else
+        if string.startsWith(playlist, "http") then playlist = FixPlaylistUrl(playlist) end
+
+        local url = playlist:gsub("^https?://", "")
+
+        http.get(url,
+            function( body )
+                local list = convertToTable(body)
+
+                if type(list) == "table" and #list > 0 then
+                    usePlaylist( list, "Loaded custom playlist!" )
+                else usePlaylist( nil, "The custom playlist couldn't be read!\nUsing the default playlist as a fail-safe!" ) end
+            end,
+            function( reason )
+                usePlaylist( nil, tostring(reason) .. "\nUsing the default playlist as a fail-safe!" )
+            end,
+        {["Content-Type"] = "text/*"})
+    end
+end
+
+
+-- < PUMP UP THE JAM > ---------------------------------------------
+
+if SERVER then
+    ----------------------------------------------------------------------
+    -- SERVER
+    --  The server decides what is playing and when. 
+    --  Clients never choose a song or decide that one has ended; they are slaves to the server.
+    ----------------------------------------------------------------------
+
+    -- some configurable shit
+    local MAX_STEP        = 15    -- most songs a single ?next / ?back may jump
+    local MAX_TIME_STEP   = 10    -- most songs a single ?time may jump
+    local LEAD            = 3     -- seconds between a song being chosen and it starting, so everyone can load it first
+
+    -- more shit to configure
+    local radio = {
+        count  = 0,                     -- "#SongList" (a client whose list differs won't play along)
+        index  = 1,                     -- the playlist index for a song that's been chosen
+        epoch  = 0,                     -- +1 whenever the song has to be loaded from scratch
+        pos    = 0,                     -- the anchor: seconds into the song...
+        time   = 0,                     -- ...at this server time
+        rate   = radioCFG.defaults["pitch"] > 0 and radioCFG.defaults["pitch"] or 1,
+        paused = false,
+        loop   = false,
+        volume = radioCFG.defaults["volume"],
+        radius = radioCFG.defaults["radius"],
+    }
+
+-- [START] do not modify!!!
+    local songLen = nil                 -- length of a song, reported by the first client that loads it
+    local order, orderPos = {}, 1       -- the play order & current index
+    local shuffle = radioCFG["shuffle"] == true
+    local ready = false                 -- has the playlist loaded?
+-- [END] do not modify!!!
+
+
+    -- < BASIC HELPERS > ----------------------------------------------
+
+    -- player = send to just that player, nil = send to everyone
+    local function send( player )
+        net.start("state")
+          net.writeTable(radio)
+        net.send(player)
+    end
+
+    -- Rebuilds the play order.
+    local function makeOrder( current )
+        order = {}
+        for i = 1, #SongList do order[i] = i end
+
+        if shuffle then
+            for i = #order, 2, -1 do
+                local j = math.random(i)
+                order[i], order[j] = order[j], order[i]
+            end
+        end
+
+        orderPos = 1
+
+        for i, song in ipairs(order) do
+            if song == current then
+                if shuffle then
+                    order[1], order[i] = order[i], order[1]
+                else orderPos = i end
+
+                break
+            end
+        end
+    end
+
+    local function startSong( index )
+        radio.index = index
+        radio.epoch = radio.epoch + 1
+        radio.pos = 0
+        radio.time = timer.curtime() + LEAD
+
+        songLen = nil
+
+        send()
+    end
+
+    -- moves X songs along the play order, where X is the amount specified. (negative = back)
+    local function step( amount )
+        local pos = orderPos + amount
+        if ( shuffle and pos > #order ) then makeOrder() end -- a lap of the entire song list has finished --> reshuffle
+
+        orderPos = (pos - 1) % #order + 1
+        startSong( order[orderPos] )
+    end
+
+    -- freezes a song properly, so a change of rate / pause / loop doesn't make the position jump.
+    local function rebase()
+        local now = timer.curtime()
+
+        if now >= radio.time then
+            radio.pos = songPos(radio)
+            radio.time = now
+        end
+    end
+
+    -- wraps cmd lib so it doesn't do anything until the playlist is ready
+    local function cmd( name, fn, aliases )
+        CMDS:registerCommand( name, function( ... )
+            if ready then fn(...) end
+        end, aliases )
+    end
+
+
+    cmd( "next", function( ply, num )
+        local n = math.floor( math.min( tonumber(num) or 1, MAX_STEP ) )
+        if n >= 1 then step( n ) end
+    end, {"n", "skip"} )
+
+    cmd( "prev", function( ply, num )
+        local n = math.floor( math.min( tonumber(num) or 1, MAX_STEP ) )
+        if n >= 1 then step( -n ) end
+    end, {"b", "back"} )
+
+    cmd( "load", function( ply, id )
+        if !id then return end
+        id = math.floor(tonumber(id))
+
+        if id > #SongList then id = 1 elseif id < 1 then id = #SongList end -- wrap around a playlist
+
+        for i, song in ipairs(order) do
+            if song == id then orderPos = i end
+        end
+
+        startSong(id)
+    end, {"play"} )
+
+    cmd( "time", function( ply, time )
+        time = time or tostring(MAX_TIME_STEP) -- if no input is provided, assume the request is just to FF a fixed amount of seconds
+
+        local sign = time:sub(1, 1)
+        local amount = tonumber( ( sign == "+" or sign == "-" ) and time:sub(2) or time )
+        if !amount then return end
+
+        local target = amount
+
+        if sign == "+" then
+            target = songPos(radio) + amount
+        elseif sign == "-" then target = songPos(radio) - amount end
+
+        if target < 0 then target = 0 end
+        if songLen and target >= math.floor(songLen) then target = 0 end -- restarts a song if the input exceeds its length
+
+        radio.pos, radio.time = target, timer.curtime()
+
+        send()
+    end, {"t"} )
+
+    cmd( "pitch", function( ply, pitch )
+        local rate = tonumber(pitch) or radioCFG.defaults["pitch"]
+
+        rebase()
+
+        radio.rate = rate > 0 and rate or 1 -- 0 or less would freeze the audio
+        print("\n♫ Pitch changed to "..radio.rate.."!")
+
+        send()
+    end, {"s", "speed"} )
+
+    cmd( "volume", function( ply, vol )
+        radio.volume = tonumber(vol) or radioCFG.defaults["volume"]
+        print("\n♫ Volume changed to "..radio.volume.."!")
+
+        send()
+    end, {"v", "vol"} )
+
+    cmd( "radius", function( ply, radius )
+        radio.radius = tonumber(radius) or radioCFG.defaults["radius"]
+        print("\n♫ Radius changed to "..radio.radius.."!")
+
+        send()
+    end, {"r", "d", "range", "dist"} )
+
+    cmd( "pause", function( ply )
+        rebase()
+        radio.paused = !radio.paused
+        send()
+    end, {"p"} )
+
+    cmd( "unpause", function( ply )
+        if !radio.paused then return end
+
+        rebase()
+        radio.paused = false
+
+        send()
+    end, {"up"} )
+
+    cmd( "loop", function( ply )
+        rebase()
+        radio.loop = !radio.loop
+
+        if ( !radio.loop and songLen ) then radio.pos = radio.pos % songLen end
+        print("\n♫ Looping #"..radio.index.." "..( radio.loop and "on" or "off" ).."!")
+
+        send()
+    end, {"repeat"} )
+
+    cmd( "shuffle", function( ply )
+        shuffle = !shuffle
+        makeOrder(radio.index) -- the current song keeps playing (this is for what comes after it)
+
+        print("\n♫ Shuffle "..( shuffle and "on" or "off" ).."!")
+    end, {"sh", "random"} )
+
+
+    -- the first client to load a song tells the server how long it is
+    -- this is what lets the server end the song for everybody at once
+    net.receive( "songLength", function()
+        local epoch, len = net.readDouble(), net.readDouble()
+
+        if epoch == radio.epoch and !songLen and len > 0 then songLen = len end
+    end )
+
+
+    -- SERVER HOOKS
+    hook.add( "ClientInitialized", "radioSync", function( ply ) -- if a player's client has just started, this will bring it up to date
+        if ready then send(ply) end
+    end )
+    hook.add( "think", "radioEnd", function()
+        if ready and songLen and !radio.paused and !radio.loop and songPos(radio) >= songLen - 0.05 then
+            step(1)
+        end
+    end )
+    hook.add( "think", "ChipTweaks", function()
+        if isValid(chip()) then
+            chip():enableMotion(false)
+            chip():setDrawShadow(false)
+        end
+    end )
+    hook.add( "PhysgunPickup", "AllowPickup", function( ply, ent )
+        if isValid(chip()) then return false end
+    end )
+    hook.add( "EntityTakeDamage", "NoChipDamage", function()
+        if isValid(chip()) then return false end
+    end )
+
+
+    loadPlaylist( function()
+        if #SongList == 0 then
+            print("\n🛈 The playlist is empty!")
+            return
+        end
+
+        radio.count = #SongList
+
+        makeOrder()
+
+        ready = true
+
+        startSong(order[orderPos])
+    end )
+else
+    ----------------------------------------------------------------------
+    -- CLIENT
+    --  Does no deciding; its enslaved to the server.
+    ----------------------------------------------------------------------
+
+    -- some configurable shit
+    local DRIFT = 1        -- seconds out of sync before the sound is moved (smaller = tighter, but more audible jumps)
+
+-- [START] do not modify!!!
+    -- the radio's client state
+    local state = nil      -- latest snapshot from the server
+    local snd = nil        -- current Bass object, nil when nothing is loaded
+    local sndEpoch = nil   -- the state.epoch that `snd` was loaded for
+    local loading = false  -- a "bass.loadURL" request is in flight
+    local fails = 0        -- failed loads / early stops of the current song (resets on every song change)
+    local nextSync = 0     -- "reconcile()" doesn't run again before this time
+-- [END] do not modify!!!
+
+
+    -- pushes the settings onto a sound
+    -- this is called on load & whenever something changes
+    local function applySettings( song )
+        song:setVolume(state.volume)
+        song:setPitch(state.rate)
+
+        local radius = math.clamp(state.radius, 50, 20000)
+        song:setFade(radius * 0.5, radius)
+    end
+
+    local reconcile -- forward declare for the loader
+
+    local function loadSong()
+        if isValid(snd) then snd:stop() end
+        snd = nil
+
+        if loading then return end
+
+        local epoch, song = state.epoch, SongList[state.index]
+        if !song then return end
+
+        loading = true
+
+        local ok, err = pcall( bass.loadURL, song["url"], "3d noblock", function( newSnd, errNum, errName )
+            loading = false
+
+            if epoch ~= state.epoch then
+                if isValid(newSnd) then newSnd:stop() end
+                return loadSong()
+            end
+
+            if !isValid(newSnd) then
+                fails = fails + 1
+                nextSync = timer.curtime() + 5 -- back off before trying again
+                print("🛈 Couldn't load #"..state.index.." ("..tostring(errName)..": "..tostring(errNum)..")")
+                return
+            end
+
+            snd, sndEpoch = newSnd, epoch
+            applySettings(snd)
+            setName(string.format("♪ Cosmic's Boombox v5 ♪ ]\n[   %s by %s   ]\n[   ID #%i   ]\n[  %i Songs Loaded ", tostring(song["name"]), tostring(song["artist"]), state.index, #SongList))
+
+            -- let the server know how long it is, then jump to the right place
+            net.start("songLength")
+              net.writeDouble(epoch)
+              net.writeDouble(snd:getLength())
+            net.send()
+
+            reconcile()
+        end )
+
+        if !ok then
+            loading = false
+            fails = fails + 1
+            nextSync = timer.curtime() + 5
+            print("\n🛈 Couldn't start loading #"..state.index..": "..tostring(err))
+        end
+    end
+
+    -- if a client buffers / ends early / joins late or drifts cuz of ping, "reconcile()" puts it back where the server says it should be.
+    function reconcile()
+        if ( !state or #SongList ~= state.count ) then return end -- nothing to obey yet, or a playlist mismatch
+
+        -- wrong song, or no sound??
+        if ( sndEpoch ~= state.epoch or !isValid(snd) ) then
+            if !loading and fails < 3 then loadSong() end
+            return
+        end
+
+        local now = timer.curtime()
+        local len = snd:getLength()
+        local hold = state.paused or now < state.time  -- paused, or the song hasn't started yet
+
+        if now < state.time then nextSync = math.min(nextSync, state.time) end -- wake up exactly when it starts
+
+        local expected = songPos(state)
+        if state.loop and len > 0 then expected = expected % len end
+
+        snd:setLooping(state.loop)
+
+        if snd:isStopped() then
+            -- Finished: nothing to do, the server moves on. But if it stopped
+            -- long before the end it died early, so load it again (3 tries).
+            if fails < 3 and snd:getTime() > 0 and len > 0 and expected < len - 1 then
+                fails = fails + 1
+                loadSong()
+            end
+
+            return
+        end
+
+        if hold then
+            if !snd:isPaused() then snd:pause() end
+        elseif snd:isPaused() then snd:play() end
+
+        -- not where the server says? Move there, now! *whip crack*   <--- lmao
+        -- (the position can't be trusted while buffering, so wait for it to catch up first)
+        if ( len > 0 and expected < len and !snd:isStalled() ) then
+            local diff = math.abs(snd:getTime() - expected)
+            if state.loop then diff = math.min(diff, len - diff) end
+
+            if diff > DRIFT then
+                snd:setTime(expected, false)
+                nextSync = now + 2 -- give the seek time to settle before judging again
+            end
+        end
+    end
+
+    -- this net message is the server's decision on what should be playing
+    net.receive( "state", function()
+        local old = state
+        state = net.readTable()
+
+        if ( !old or old.epoch ~= state.epoch ) then fails = 0 end
+        if isValid(snd) then applySettings(snd) end
+
+        reconcile()
+    end )
+
+    hook.add( "think", "radio", function()
+        local now = timer.curtime()
+
+        if isValid(snd) then
+            snd:setPos(chip():getPos())
+        end
+
+        if ( now >= nextSync ) then
+            nextSync = now + 0.5
+            reconcile()
+        end
+    end )
+
+
+    -- < Visualizer > -----------------------------------------------------
+    -- TODO: make this not look like shit
+    -- TODO: add a nice display of album art, song title, artist(s), album name & release year (for songs with ID3v2 metadata)
+    local front, back = "RT", "RT2"
+    render.createRenderTarget(front)
+    render.createRenderTarget(back)
+
+    local centerTransform = Matrix()
+    centerTransform:setTranslation( Vector(512, 512, 0) )
+
+    hook.add( "render", "visualizer", function()
+        if isValid(snd) then
+            local bins = 64
+            local fft = snd:getFFT(bins)
+
+            render.setRenderTargetTexture(front)
+            render.selectRenderTarget(back)
+
+            render.clear( Color(0, 0, 0, 255) )
+            render.setColor( Color(255, 255, 255, 200) )
+            render.drawTexturedRect( -15, -15, 1054, 1054 )
+            render.setColor( Color( (timer.curtime() * 10 + 180) % 360 - 180, 1, 1 ):hsvToRGB() )
+
+            render.pushMatrix(centerTransform)
+
+            local firstX, firstY, lastX, lastY
+
+            for k = 2, bins do
+                local r = 200 - math.log10(k) * (fft[k] or 0) * 1000
+                local theta = (k - 2) * 2 * math.pi / (bins - 1)
+                local x, y = r * math.cos(theta), r * math.sin(theta)
+
+                if lastX then
+                    render.drawLine(x, y, lastX, lastY)
+                else firstX, firstY = x, y end
+
+                lastX, lastY = x, y
+            end
+
+            render.drawLine( firstX, firstY, lastX, lastY )
+            render.popMatrix()
+            render.selectRenderTarget()
+
+            front, back = back, front
+        end
+
+        -- always show the latest finished frame
+        render.setColor( Color(255, 255, 255, 255) )
+        render.setRenderTargetTexture(front)
+        render.drawTexturedRect(0, 0, 512, 512)
+    end )
+
+    -- TODO: get rid of this and migrate it into a table
+    print([[
+     ⛧ 『 Welcome to the radio! 』 ⛧
+      ♦ Heres the list of available commands:
+
+    - ?load <NUMBER>  ::  Jumps to a song id in the playlist
+    - ?back, ?next <NUMBER>  ::  FF or RW the curr song
+    - ?shuffle <TOGGLE>  ::  Plays the playlist in a random order
+    - ?vol <NUMBER>  ::  Changes the radio's curr volume
+    - ?pitch <NUMBER>  ::  Changes the speed of the audio
+    - ?radius <NUMBER>  ::  Changes the max audio distance
+    - ?time -/+<NUMBER> ::  Skips to a point in a song
+    - ?loop <TOGGLE>  ::  Loops the current song until you change tracks
+    - ?pause <TOGGLE>  ::  Pauses / Unpauses a track
+    - ?unpause  ::  Forcefully unpauses a track in case of lag
+    ]])
+
+
+    -- the server could've sent its state before a playlist was ready
+    loadPlaylist(reconcile)
+end
